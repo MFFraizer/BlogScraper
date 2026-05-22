@@ -46,12 +46,12 @@ HEADERS = {
 # and put it first in this list. The scraper tries each in order.
 
 CONTENT_SELECTORS = [
-    ".aa_ht",           # common on lit-style sites
-    ".panel.article",
+    "div[itemprop='articleBody']", # semantic — works on Literotica and many others
+    ".aa_ht",
     ".story-text",
     "#story",
     "div.b-story-body",
-    "div[itemprop='articleBody']",
+    ".panel.article",
     "article",
 ]
 
