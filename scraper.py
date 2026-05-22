@@ -109,23 +109,84 @@ def extract_title(soup: BeautifulSoup, fallback: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Series detection
+# ---------------------------------------------------------------------------
+
+def _chapter_sort_key(url: str) -> int:
+    """Extract trailing chapter number for sorting series URLs."""
+    m = re.search(r"-(\d+)/?$", url.rstrip("/"))
+    return int(m.group(1)) if m else 0
+
+
+def get_series_urls(story_url: str, session: requests.Session) -> list[str] | None:
+    """
+    If the story belongs to a Literotica series, return all chapter URLs
+    sorted by chapter number. Returns None if no series link is found.
+    """
+    resp = get_page(story_url, session)
+    if resp is None:
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    series_href = None
+    for a in soup.find_all("a", href=True):
+        if re.search(r"/series/se/\d+", a["href"]):
+            series_href = a["href"]
+            break
+
+    if not series_href:
+        return None
+
+    if not series_href.startswith("http"):
+        # Resolve relative URL using the story's origin
+        origin = re.match(r"https?://[^/]+", story_url).group(0)
+        series_href = origin + series_href
+
+    print(f"    Series : {series_href}")
+    time.sleep(REQUEST_DELAY)
+    series_resp = get_page(series_href, session)
+    if series_resp is None:
+        return None
+
+    series_soup = BeautifulSoup(series_resp.text, "html.parser")
+
+    seen: set[str] = set()
+    urls: list[str] = []
+    origin = re.match(r"https?://[^/]+", story_url).group(0)
+    for a in series_soup.find_all("a", href=True):
+        href = a["href"]
+        # Normalise relative hrefs
+        if href.startswith("/s/"):
+            href = origin + href
+        if (
+            "/s/" in href
+            and "comments" not in href
+            and "dialog" not in href
+            and href not in seen
+        ):
+            seen.add(href)
+            urls.append(href)
+
+    if not urls:
+        return None
+
+    return sorted(urls, key=_chapter_sort_key)
+
+
+# ---------------------------------------------------------------------------
 # Scraping logic
 # ---------------------------------------------------------------------------
 
-def scrape_chapter(
-    base_url: str,
+def scrape_chapter_from_url(
+    chapter_url: str,
     chapter_num: int,
     session: requests.Session,
-    ch_width: int = 1,
 ) -> tuple[str, str] | None:
     """
-    Scrape all pages of one chapter.
+    Scrape all pages of one chapter given its full URL.
     Returns (chapter_title, combined_html) or None if the chapter 404s.
-    ch_width controls zero-padding: 2 → "ch-01", 1 → "ch-1".
     """
-    chapter_url = f"{base_url}-ch-{str(chapter_num).zfill(ch_width)}"
-
-    # Page 1 — also determines whether the chapter exists
     response = get_page(chapter_url, session)
     if response is None:
         return None
@@ -135,7 +196,6 @@ def scrape_chapter(
     content_blocks = [extract_content(soup)]
     print(f"    Page 1 ✓")
 
-    # Pages 2+ — stop on 404
     for page_num in range(2, MAX_PAGES_PER_CHAPTER + 1):
         time.sleep(REQUEST_DELAY)
         page_url = f"{chapter_url}?page={page_num}"
@@ -148,6 +208,21 @@ def scrape_chapter(
 
     combined = "\n<hr/>\n".join(content_blocks)
     return chapter_title, combined
+
+
+def scrape_chapter(
+    base_url: str,
+    chapter_num: int,
+    session: requests.Session,
+    ch_width: int = 1,
+) -> tuple[str, str] | None:
+    """
+    Scrape one chapter by constructing its URL from base + chapter number.
+    Returns (chapter_title, combined_html) or None if the chapter 404s.
+    ch_width controls zero-padding: 2 → "ch-01", 1 → "ch-1".
+    """
+    chapter_url = f"{base_url}-ch-{str(chapter_num).zfill(ch_width)}"
+    return scrape_chapter_from_url(chapter_url, chapter_num, session)
 
 
 # ---------------------------------------------------------------------------
@@ -257,26 +332,49 @@ def main():
     session = requests.Session()
     chapters: list[tuple[str, str]] = []
 
-    ch = start_chapter
-    while True:
-        print(f"  Chapter {ch}…")
-        time.sleep(REQUEST_DELAY)
-        result = scrape_chapter(base_url, ch, session, ch_width)
-        if result is None:
-            print(f"  → Chapter {ch} returned 404 — end of story.\n")
-            break
-        ch_title, ch_content = result
-        # Use the page title for chapter 1 as the story title
-        if ch == start_chapter and ch_title != f"Chapter {ch}":
-            story_title = ch_title
-        chapters.append((f"Chapter {ch}", ch_content))
-        ch += 1
+    # Check for a series page — some stories use unique slugs per chapter
+    # rather than sequential -ch-N numbering
+    print(f"  Checking for series…")
+    series_urls = get_series_urls(start_url, session)
+
+    if series_urls:
+        print(f"  → Series found: {len(series_urls)} chapter(s)\n")
+        # Filter to only chapters at or after start_chapter
+        start_key = _chapter_sort_key(start_url)
+        series_urls = [u for u in series_urls if _chapter_sort_key(u) >= start_key]
+
+        for i, chapter_url in enumerate(series_urls, start_chapter):
+            print(f"  Chapter {i}…")
+            time.sleep(REQUEST_DELAY)
+            result = scrape_chapter_from_url(chapter_url, i, session)
+            if result is None:
+                print(f"  ⚠  Skipping chapter {i} (fetch failed).")
+                continue
+            ch_title, ch_content = result
+            if i == start_chapter and ch_title != f"Chapter {i}":
+                story_title = ch_title
+            chapters.append((f"Chapter {i}", ch_content))
+    else:
+        print(f"  → No series found, using sequential URL pattern\n")
+        ch = start_chapter
+        while True:
+            print(f"  Chapter {ch}…")
+            time.sleep(REQUEST_DELAY)
+            result = scrape_chapter(base_url, ch, session, ch_width)
+            if result is None:
+                print(f"  → Chapter {ch} returned 404 — end of story.\n")
+                break
+            ch_title, ch_content = result
+            if ch == start_chapter and ch_title != f"Chapter {ch}":
+                story_title = ch_title
+            chapters.append((f"Chapter {ch}", ch_content))
+            ch += 1
 
     if not chapters:
         print("No content scraped — check selectors and URL.")
         sys.exit(1)
 
-    print(f"✅  Scraped {len(chapters)} chapter(s).")
+    print(f"\n✅  Scraped {len(chapters)} chapter(s).")
     print(f"📦  Building EPUB…")
 
     book = build_epub(story_title, author, chapters)
