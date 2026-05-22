@@ -118,12 +118,14 @@ def scrape_chapter(
     base_url: str,
     chapter_num: int,
     session: requests.Session,
+    ch_width: int = 1,
 ) -> tuple[str, str] | None:
     """
     Scrape all pages of one chapter.
     Returns (chapter_title, combined_html) or None if the chapter 404s.
+    ch_width controls zero-padding: 2 → "ch-01", 1 → "ch-1".
     """
-    chapter_url = f"{base_url}-ch-{chapter_num}"
+    chapter_url = f"{base_url}-ch-{str(chapter_num).zfill(ch_width)}"
 
     # Page 1 — also determines whether the chapter exists
     response = get_page(chapter_url, session)
@@ -182,6 +184,7 @@ def build_epub(story_title: str, author: str, chapters: list[tuple[str, str]]) -
             file_name=f"chapter_{i:03d}.xhtml",
             lang="en",
         )
+        # ebooklib's parse_html_string requires bytes when an XML declaration is present
         c.content = (
             f'<?xml version="1.0" encoding="utf-8"?>'
             f'<!DOCTYPE html>'
@@ -192,7 +195,7 @@ def build_epub(story_title: str, author: str, chapters: list[tuple[str, str]]) -
             f'<h1>{ch_title}</h1>'
             f'{content}'
             f'</body></html>'
-        )
+        ).encode('utf-8')
         c.add_item(style)
         book.add_item(c)
         epub_chapters.append(c)
@@ -209,11 +212,12 @@ def build_epub(story_title: str, author: str, chapters: list[tuple[str, str]]) -
 # URL parsing
 # ---------------------------------------------------------------------------
 
-def parse_start_url(url: str) -> tuple[str, str, int]:
+def parse_start_url(url: str) -> tuple[str, str, int, int]:
     """
-    Returns (base_url_without_ch, story_slug, start_chapter).
-    E.g. 'https://www.lit.com/s/my-story-ch-1'
-      → ('https://www.lit.com/s/my-story', 'my-story', 1)
+    Returns (base_url_without_ch, story_slug, start_chapter, ch_width).
+    ch_width is the zero-pad width of the chapter number in the URL.
+    E.g. 'https://www.lit.com/s/my-story-ch-01'
+      → ('https://www.lit.com/s/my-story', 'my-story', 1, 2)
     """
     match = re.match(r"^(https?://[^/]+/s/(.+?))-ch-(\d+)/?$", url.rstrip("/"))
     if not match:
@@ -223,8 +227,10 @@ def parse_start_url(url: str) -> tuple[str, str, int]:
         )
     base = match.group(1)
     slug = match.group(2)
-    start_ch = int(match.group(3))
-    return base, slug, start_ch
+    raw_ch = match.group(3)
+    start_ch = int(raw_ch)
+    ch_width = len(raw_ch)  # e.g. "01" → 2, "1" → 1
+    return base, slug, start_ch, ch_width
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +246,7 @@ def main():
     author = sys.argv[2] if len(sys.argv) > 2 else "Unknown Author"
 
     try:
-        base_url, story_slug, start_chapter = parse_start_url(start_url)
+        base_url, story_slug, start_chapter, ch_width = parse_start_url(start_url)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
@@ -257,7 +263,7 @@ def main():
     while True:
         print(f"  Chapter {ch}…")
         time.sleep(REQUEST_DELAY)
-        result = scrape_chapter(base_url, ch, session)
+        result = scrape_chapter(base_url, ch, session, ch_width)
         if result is None:
             print(f"  → Chapter {ch} returned 404 — end of story.\n")
             break
