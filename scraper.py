@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Story scraper: paginated chapter/page site → EPUB → AZW3 (via Calibre)
+Story scraper: paginated chapter/page site → EPUB
 
 Usage:
     python scraper.py https://www.lit.com/s/my-only-talent-ch-1
+    python scraper.py https://www.lit.com/s/my-only-talent-ch-1 "Author Name"
 
 Requirements:
     pip install requests beautifulsoup4 ebooklib
-
-To convert output to AZW3:
-    ebook-convert my-only-talent.epub my-only-talent.azw3
 """
 
 from __future__ import annotations
@@ -285,16 +283,6 @@ def main():
     epub_path = f"{story_slug}.epub"
     epub.write_epub(epub_path, book)
     print(f"✅  Saved: {epub_path}")
-
-    print(f"""
-─────────────────────────────────────
-Next step — convert to AZW3:
-
-  ebook-convert {epub_path} {story_slug}.azw3
-
-Then copy {story_slug}.azw3 to your Kindle via USB or Send to Kindle.
-─────────────────────────────────────
-""")
 
 
 if __name__ == "__main__":

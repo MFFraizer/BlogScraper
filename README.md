@@ -1,13 +1,12 @@
 # BlogScraper
 
-Scrapes paginated story chapters from lit.com-style sites and assembles them into a readable EPUB. Optionally converts to AZW3 for Kindle via Calibre.
+Scrapes paginated story chapters from lit.com-style sites and assembles them into a readable EPUB.
 
 ---
 
 ## Requirements
 
 - Python 3.10+
-- [Calibre](https://calibre-ebook.com/) (only needed for AZW3/Kindle conversion)
 
 Install Python dependencies:
 
@@ -48,15 +47,7 @@ An EPUB file is written to the current directory:
 my-only-talent.epub
 ```
 
-### Convert to AZW3 (Kindle)
-
-Requires [Calibre](https://calibre-ebook.com/) to be installed:
-
-```bash
-ebook-convert my-only-talent.epub my-only-talent.azw3
-```
-
-Then transfer the `.azw3` file to your Kindle via USB or Send to Kindle.
+Upload the `.epub` directly to your Kindle via the Send to Kindle web uploader, the Kindle app, or USB transfer.
 
 ---
 
@@ -78,7 +69,7 @@ The scraper tries each selector in `CONTENT_SELECTORS` in order and uses the fir
 ```python
 CONTENT_SELECTORS = [
     ".your-new-selector",   # add your site-specific selector first
-    ".aa_ht",
+    "div[itemprop='articleBody']",
     # ... existing selectors
 ]
 ```
