@@ -113,50 +113,29 @@ def extract_title(soup: BeautifulSoup, fallback: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 def _chapter_sort_key(url: str) -> int:
-    """Extract trailing chapter number for sorting series URLs."""
+    """
+    Extract chapter number for sorting series URLs.
+    Prefers the number after '-ch-' (e.g. 'story-ch-03-1' → 3)
+    over a bare trailing number (e.g. 'story-3' → 3).
+    """
+    m = re.search(r"-ch-(\d+)", url)
+    if m:
+        return int(m.group(1))
     m = re.search(r"-(\d+)/?$", url.rstrip("/"))
     return int(m.group(1)) if m else 0
 
 
-def get_series_urls(story_url: str, session: requests.Session) -> list[str] | None:
-    """
-    If the story belongs to a Literotica series, return all chapter URLs
-    sorted by chapter number. Returns None if no series link is found.
-    """
-    resp = get_page(story_url, session)
+def _scrape_series_page(series_url: str, origin: str, session: requests.Session) -> list[str] | None:
+    """Fetch a series index page and return all chapter URLs found on it."""
+    resp = get_page(series_url, session)
     if resp is None:
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
-
-    series_href = None
-    for a in soup.find_all("a", href=True):
-        if re.search(r"/series/se/\d+", a["href"]):
-            series_href = a["href"]
-            break
-
-    if not series_href:
-        return None
-
-    if not series_href.startswith("http"):
-        # Resolve relative URL using the story's origin
-        origin = re.match(r"https?://[^/]+", story_url).group(0)
-        series_href = origin + series_href
-
-    print(f"    Series : {series_href}")
-    time.sleep(REQUEST_DELAY)
-    series_resp = get_page(series_href, session)
-    if series_resp is None:
-        return None
-
-    series_soup = BeautifulSoup(series_resp.text, "html.parser")
-
     seen: set[str] = set()
     urls: list[str] = []
-    origin = re.match(r"https?://[^/]+", story_url).group(0)
-    for a in series_soup.find_all("a", href=True):
+    for a in soup.find_all("a", href=True):
         href = a["href"]
-        # Normalise relative hrefs
         if href.startswith("/s/"):
             href = origin + href
         if (
@@ -167,7 +146,38 @@ def get_series_urls(story_url: str, session: requests.Session) -> list[str] | No
         ):
             seen.add(href)
             urls.append(href)
+    return urls or None
 
+
+def get_series_urls(story_url: str, session: requests.Session) -> list[str] | None:
+    """
+    If the story belongs to a Literotica series, return all chapter URLs
+    sorted by chapter number. Returns None if no series link is found.
+    Accepts either a chapter URL or a /series/se/XXXXXX URL directly.
+    """
+    origin = re.match(r"https?://[^/]+", story_url).group(0)
+
+    # Direct series URL — skip the story-page lookup
+    if re.search(r"/series/se/\d+", story_url):
+        series_href = story_url
+    else:
+        resp = get_page(story_url, session)
+        if resp is None:
+            return None
+        soup = BeautifulSoup(resp.text, "html.parser")
+        series_href = None
+        for a in soup.find_all("a", href=True):
+            if re.search(r"/series/se/\d+", a["href"]):
+                series_href = a["href"]
+                break
+        if not series_href:
+            return None
+        if not series_href.startswith("http"):
+            series_href = origin + series_href
+
+    print(f"    Series : {series_href}")
+    time.sleep(REQUEST_DELAY)
+    urls = _scrape_series_page(series_href, origin, session)
     if not urls:
         return None
 
@@ -318,29 +328,48 @@ def main():
     start_url = sys.argv[1].strip()
     author = sys.argv[2] if len(sys.argv) > 2 else "Unknown Author"
 
-    try:
-        base_url, story_slug, start_chapter, ch_width = parse_start_url(start_url)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    is_series_url = bool(re.search(r"/series/se/\d+", start_url))
 
-    story_title = story_slug.replace("-", " ").title()
+    if is_series_url:
+        base_url = story_slug = None
+        start_chapter = 1
+        ch_width = 1
+        story_title = "Unknown Story"
+    else:
+        try:
+            base_url, story_slug, start_chapter, ch_width = parse_start_url(start_url)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        story_title = story_slug.replace("-", " ").title()
+
     print(f"\n📖  {story_title}")
-    print(f"    Base URL : {base_url}")
+    if not is_series_url:
+        print(f"    Base URL : {base_url}")
     print(f"    Starting : Chapter {start_chapter}\n")
 
     session = requests.Session()
     chapters: list[tuple[str, str]] = []
 
-    # Check for a series page — some stories use unique slugs per chapter
-    # rather than sequential -ch-N numbering
     print(f"  Checking for series…")
     series_urls = get_series_urls(start_url, session)
 
     if series_urls:
         print(f"  → Series found: {len(series_urls)} chapter(s)\n")
+        # When entering via a series URL, derive slug and title from first chapter URL
+        if is_series_url:
+            first = series_urls[0]
+            slug_match = re.search(r"/s/([^/?#]+)", first)
+            if slug_match:
+                raw_slug = slug_match.group(1)
+                # Strip trailing version suffix and chapter suffix for the slug
+                story_slug = re.sub(r"-ch-\d+.*$", "", raw_slug) or re.sub(r"-\d+$", "", raw_slug)
+                story_title = story_slug.replace("-", " ").title()
+                print(f"    Title    : {story_title}")
+                print(f"    Slug     : {story_slug}\n")
+
         # Filter to only chapters at or after start_chapter
-        start_key = _chapter_sort_key(start_url)
+        start_key = _chapter_sort_key(start_url) if not is_series_url else 0
         series_urls = [u for u in series_urls if _chapter_sort_key(u) >= start_key]
 
         for i, chapter_url in enumerate(series_urls, start_chapter):
